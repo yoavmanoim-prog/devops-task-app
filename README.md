@@ -47,7 +47,7 @@ Multi-stage build, `python:3.13-slim` pinned by content digest (not a tag), runs
 
 ## CI/CD
 
-Three fully independent workflow files under `.github/workflows/` - each does exactly one thing
+Three per-environment workflow files (plus `lint.yaml`) under `.github/workflows/` - each does exactly one thing
 for exactly one branch, no shared file, no branch-conditional jobs:
 
 - **`dev.yaml`** (push to `dev`) - lint + test → build, smoke-test the actual built container

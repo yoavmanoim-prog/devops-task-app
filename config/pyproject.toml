@@ -9,4 +9,9 @@ select = ["E", "F", "I", "UP"]
 testpaths = ["tests"]
 
 [tool.coverage.run]
-source = ["src"]
+# Both are passed explicitly as --cov= flags at the call site too (a --cov
+# CLI arg overrides this list entirely, so the two must agree). .github/scripts
+# is in scope deliberately: patch_gitops_values.py writes to the gitops repo's
+# main branch, which ArgoCD then auto-syncs to a cluster - the highest-risk
+# code in this repo, so it belongs under the same coverage gate as the app.
+source = ["src", ".github/scripts"]
