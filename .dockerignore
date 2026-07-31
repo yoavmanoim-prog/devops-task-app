@@ -1,0 +1,13 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.git/
+.github/
+tests/
+requirements-dev.txt
+pyproject.toml
+.dockerignore
+.gitignore
