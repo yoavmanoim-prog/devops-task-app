@@ -7,7 +7,7 @@ name: lint
 on:
   pull_request:
   push:
-    branches: [dev, staging, prod, main]
+    branches: [dev, staging, main]
 
 permissions:
   contents: read

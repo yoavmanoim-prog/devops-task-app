@@ -1,8 +1,10 @@
 name: prod
 
+# main is the production branch - no separate `prod` branch. Merging
+# `staging` -> `main` (a PR within this repo) is what triggers this.
 on:
   push:
-    branches: [prod]
+    branches: [main]
 
 permissions:
   contents: read
