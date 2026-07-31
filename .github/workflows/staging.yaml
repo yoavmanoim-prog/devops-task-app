@@ -1,0 +1,59 @@
+name: staging
+
+on:
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: devops-task-app
+  HELM_VERSION: v4.2.3
+
+jobs:
+  promote-to-gitops:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for AWS OIDC
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 - for the patch script
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yoavmanoim-prog/devops-task-gitops
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+      - name: Read dev's current image tag
+        id: source
+        run: |
+          TAG=$(python3 .github/scripts/patch_gitops_values.py read-tag \
+            --file gitops/apps/dev/values-dev.yaml)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: ./.github/actions/verify-ecr-tag
+        with:
+          repository: ${{ env.ECR_REPOSITORY }}
+          tag: ${{ steps.source.outputs.tag }}
+          region: ${{ env.AWS_REGION }}
+      - name: Promote dev's tag to staging
+        run: |
+          python3 .github/scripts/patch_gitops_values.py promote \
+            --source gitops/apps/dev/values-dev.yaml \
+            --target gitops/apps/dev/values-staging.yaml \
+            --reset-probes
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Render chart with the patched values (fail fast if broken)
+        run: |
+          helm template staging gitops/charts/app \
+            -f gitops/apps/dev/values-staging.yaml > /dev/null
+      - uses: ./.github/actions/commit-and-push
+        with:
+          file: apps/dev/values-staging.yaml
+          message: "chore: promote dev's image tag to staging"
