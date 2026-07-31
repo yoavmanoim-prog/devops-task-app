@@ -14,6 +14,7 @@ env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: 302954730632.dkr.ecr.us-east-1.amazonaws.com
   ECR_REPOSITORY: devops-task-app
+  HELM_VERSION: v4.2.3
 
 jobs:
   test:
@@ -24,7 +25,10 @@ jobs:
       - name: Lint
         run: ruff check --config config/pyproject.toml .
       - name: Unit tests
-        run: pytest -c config/pyproject.toml --rootdir=. --cov=src --cov-report=term-missing --cov-fail-under=80
+        # .github/scripts is covered too - patch_gitops_values.py writes to the
+        # gitops repo's main branch, which auto-syncs to a cluster, so it belongs
+        # under the same gate as the app. Keep in step with [tool.coverage.run].
+        run: pytest -c config/pyproject.toml --rootdir=. --cov=src --cov=.github/scripts --cov-report=term-missing --cov-fail-under=80
 
   build-and-push:
     runs-on: ubuntu-latest
@@ -91,6 +95,16 @@ jobs:
             --repository "$ECR_REGISTRY/$ECR_REPOSITORY" \
             --tag "${{ needs.build-and-push.outputs.image_tag }}" \
             --reset-probes
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      # staging/prod both render before committing; dev needs it MORE, not less -
+      # it's the only environment whose Application auto-syncs off a fully
+      # automated write, with no human PR between here and the cluster.
+      - name: Render chart with the patched values (fail fast if broken)
+        run: |
+          helm template dev gitops/charts/app \
+            -f gitops/apps/dev/values-dev.yaml > /dev/null
       - uses: ./.github/actions/commit-and-push
         with:
           file: apps/dev/values-dev.yaml
