@@ -1,0 +1,18 @@
+name: verify-ecr-tag
+description: Fail if the given image tag does not exist in the ECR repository
+inputs:
+  repository:
+    required: true
+  tag:
+    required: true
+  region:
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        aws ecr describe-images \
+          --repository-name "${{ inputs.repository }}" \
+          --image-ids imageTag="${{ inputs.tag }}" \
+          --region "${{ inputs.region }}"
