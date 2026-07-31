@@ -56,17 +56,18 @@ for exactly one branch, no shared file, no branch-conditional jobs:
 - **`staging.yaml`** (push to `staging`) - verify the source tag actually exists in ECR → promote
   it (no rebuild) into `gitops/apps/dev/values-staging.yaml` → `helm template` the result to fail
   fast if it's broken → commit + push.
-- **`prod.yaml`** (push to `prod`) - same shape, `apps/dev/values-staging.yaml` →
+- **`prod.yaml`** (push to `main`) - same shape, `apps/dev/values-staging.yaml` →
   `apps/prod/values-production.yaml`. Production's `Application` has no automated sync policy, so
   this does not itself deploy anything - a human still clicks Sync in ArgoCD.
-- **`lint.yaml`** (every PR + push to any of the 4 long-lived branches) - `actionlint` over the
+- **`lint.yaml`** (every PR + push to any of the 3 long-lived branches) - `actionlint` over the
   whole repo, so a future broken workflow or composite action gets caught in CI, not just by
   whoever happens to run it locally.
 
-**Branching model**: `main` is a trivial bootstrap branch. `dev`/`staging`/`prod` are long-lived;
-feature branches → PR → `dev` is where real builds happen. Merging `dev` → `staging` or
-`staging` → `prod` (PRs within this repo) never rebuilds - it re-tags the *same* image digest
-forward, so what reaches production is provably the exact thing already tested in dev.
+**Branching model**: `main` **is** the production branch - there's no separate `prod` branch.
+`dev`/`staging`/`main` are long-lived; feature branches → PR → `dev` is where real builds happen.
+Merging `dev` → `staging` or `staging` → `main` (PRs within this repo) never rebuilds - it re-tags
+the *same* image digest forward, so what reaches production is provably the exact thing already
+tested in dev.
 
 Every third-party GitHub Action used (`actions/checkout`, `aws-actions/configure-aws-credentials`,
 `aws-actions/amazon-ecr-login`, `docker/setup-buildx-action`, `docker/build-push-action`,
