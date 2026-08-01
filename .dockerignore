@@ -7,7 +7,7 @@ __pycache__/
 .git/
 .github/
 tests/
-requirements-dev.txt
-pyproject.toml
+config/requirements-dev.txt
+config/pyproject.toml
 .dockerignore
 .gitignore
