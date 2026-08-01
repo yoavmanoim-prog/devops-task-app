@@ -56,17 +56,6 @@ jobs:
       - uses: ./.github/actions/smoke-test-container
         with:
           image: app-under-test:${{ steps.vars.outputs.image_tag }}
-      # TEMPORARY DEBUG - decodes the OIDC token's claims (payload only, never
-      # the signature) so we can compare `sub` against the IAM trust policy.
-      - name: Debug OIDC claims
-        run: |
-          RAW=$(curl -sLS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
-          PAYLOAD=$(echo "$RAW" | cut -d. -f2)
-          PAD=$(( (4 - ${#PAYLOAD} % 4) % 4 ))
-          PAYLOAD="${PAYLOAD}$(printf '=%.0s' $(seq 1 $PAD))"
-          echo "$PAYLOAD" | tr '_-' '/+' | base64 -d 2>/dev/null \
-            | jq '{sub, aud, repository, ref, event_name, workflow_ref}'
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
