@@ -158,3 +158,22 @@ Two things this repo's CI needs that aren't (and shouldn't be) committed:
 - **Staging's values file does double duty**, which couples the two environments: it is both "what
   staging runs" and the source `prod.yaml` reads to decide what production should run. So rolling
   staging back would also change what the next merge to `main` proposes for production.
+- **`dev.yaml` still rebuilds on pushes that cannot change the image.** `prod.yaml` gained a
+  `paths:` filter (see *Rolling production back*); `dev.yaml` did not. Its trigger filters on branch
+  only, and the tag comes from the commit SHA - but the Dockerfile copies exactly
+  `config/requirements.txt` and `src/`. So a change to `README.md`, `tests/**`,
+  `config/pyproject.toml` or `.github/**` mints a brand-new `sha-` tag for byte-identical image
+  contents: a redundant ECR push against the 30-image lifecycle retention, plus a gitops bump that
+  auto-syncs and rolls the dev pods for nothing.
+
+  Two traps make the obvious fix wrong, which is why it isn't applied blindly:
+
+  1. **It must not be added to the `pull_request:` trigger.** `test` and `actionlint` are required
+     status checks on `dev`, so a filtered PR trigger leaves docs-only PRs permanently unmergeable
+     on a pending check.
+  2. **`on.push` allows one `paths:` block, shared by `branches:` and `tags:`.** `dev.yaml` also
+     triggers on `v*` tags for the semver ECR push, so a shared filter risks skipping a release cut
+     on a commit that touched none of those paths. The clean fix is a separate release workflow.
+
+  Unlike the pin guard, this one is purely an efficiency problem - the redundant image is identical
+  to its predecessor, so nothing wrong ever reaches a cluster.
