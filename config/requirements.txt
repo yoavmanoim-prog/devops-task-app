@@ -1,2 +1,6 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.0
+# Serves /metrics. Added because the gitops chart's ServiceMonitor is worthless
+# without a real scrape target - a monitor pointing at a 404 collects nothing
+# and reports no error.
+prometheus-fastapi-instrumentator==8.1.0
