@@ -1,8 +1,23 @@
 import os
 
 from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="devops-task-app")
+
+# Exposes /metrics: request counts, durations and in-flight requests, labelled
+# by method, path and status. The cluster runs kube-prometheus-stack, but it
+# only collected node and control-plane metrics - nothing scraped this app,
+# because there was nothing to scrape. The chart's ServiceMonitor points here.
+#
+# excluded_handlers keeps the probe endpoints out of the metrics: kubelet hits
+# /healthz and /readyz every few seconds, which would dominate the request
+# counters and make the latency histograms describe the probes rather than real
+# traffic. /metrics excludes itself for the same reason once Prometheus starts
+# scraping it.
+Instrumentator(
+    excluded_handlers=["/healthz", "/readyz", "/metrics"],
+).instrument(app).expose(app, include_in_schema=False)
 
 # Path is overridable so tests can point it at a tmp dir instead of requiring
 # a real Secret volume mount - defaults to where the gitops chart mounts the
