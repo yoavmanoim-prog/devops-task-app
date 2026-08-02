@@ -47,8 +47,8 @@ Multi-stage build, `python:3.13-slim` pinned by content digest (not a tag), runs
 
 ## CI/CD
 
-Three per-environment workflow files (plus `lint.yaml`) under `.github/workflows/` - each does exactly one thing
-for exactly one branch, no shared file, no branch-conditional jobs:
+Three per-environment workflow files under `.github/workflows/` (plus `lint.yaml` and
+`rollback.yaml`) - each does exactly one thing, no shared file, no branch-conditional jobs:
 
 - **`dev.yaml`** (push to `dev`) - lint + test → build, smoke-test the actual built container
   (not a separate rebuild), push to ECR tagged `sha-<shortsha>` (+ semver on `v*` tags) → bump
@@ -59,6 +59,13 @@ for exactly one branch, no shared file, no branch-conditional jobs:
 - **`prod.yaml`** (push to `main`) - same shape, `apps/dev/values-staging.yaml` →
   `apps/prod/values-production.yaml`. Production's `Application` has no automated sync policy, so
   this does not itself deploy anything - a human still clicks Sync in ArgoCD.
+- **`rollback.yaml`** (manual `workflow_dispatch`) - pins production to an **existing** ECR tag.
+  Nothing is rebuilt; it reuses the same `verify-ecr-tag` guard, the same patch script (`bump`,
+  with an explicit `--tag`), the same `helm template` check and the same commit-and-push. Needed
+  because the promotion path above can only ever move production to staging's *current* tag, and
+  nothing in these workflows reads app source - so reverting app code doesn't roll back a deploy
+  either. The alternative was hand-editing the gitops repo, which breaks the rule that CI is its
+  sole writer. Like a promotion, it only lands the tag in git: a human still clicks Sync.
 - **`lint.yaml`** (every PR + push to any of the 3 long-lived branches) - `actionlint` over the
   whole repo, so a future broken workflow or composite action gets caught in CI, not just by
   whoever happens to run it locally.
@@ -93,3 +100,24 @@ Two things this repo's CI needs that aren't (and shouldn't be) committed:
   the real secret exists.
 - `secret_message` on `/` echoes the mounted secret's actual value - fine for this demo secret
   (we control its content), not a pattern to copy for a real credential.
+- **A production rollback is not sticky.** `prod.yaml` triggers on *any* push to `main` with no
+  `paths:` filter, and unconditionally copies staging's current tag onto production. So after a
+  rollback pins production to `sha-GOOD`, the next merge to `main` - even a README fix by someone
+  who doesn't know a rollback happened - re-reads `values-staging.yaml` (still `sha-BAD`, since
+  staging wasn't rolled back) and writes it straight back. The manual ArgoCD Sync stops it going
+  live silently, but the rollback has been erased from git and the next person to hit Sync ships
+  the bad image.
+
+  Worth being precise about why the obvious guard doesn't help: a "skip if the tag already matches
+  what's deployed" check fires *exactly* when you need it to hold still, because the rollback is
+  what made the tags differ. That's an efficiency control, not a safety one - it has no concept of
+  intent. The real fixes are a GitHub Environment on `prod.yaml` with a required reviewer (the job
+  waits for a human who can decline an unrelated promotion - no new state, and free on public
+  repos), or a `paths:` filter so unrelated merges don't trigger it at all. Neither is applied.
+- **There is no staging rollback**, only production. Staging's `Application` is auto-synced with
+  `selfHeal`, so a staging rollback would take effect immediately but hold only until the next
+  `dev` → `staging` merge re-promoted dev's tag - which is arguably correct, since staging exists
+  to track dev. Adding it is one `environment` choice input on `rollback.yaml`.
+- **Staging's values file does double duty**, which couples the two environments: it is both "what
+  staging runs" and the source `prod.yaml` reads to decide what production should run. So rolling
+  staging back would also change what the next merge to `main` proposes for production.
