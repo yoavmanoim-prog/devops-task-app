@@ -5,6 +5,24 @@ name: prod
 on:
   push:
     branches: [main]
+    # Only merges that can actually change the image propose a deployment.
+    # Without this, a README or workflow tweak merged to main triggers a
+    # promotion - and with the pin guard below that promotion would fail
+    # loudly for no good reason. The two go together: this keeps the workflow
+    # from running when no promotion was intended, so a guard failure always
+    # means something real.
+    paths:
+      - "src/**"
+      - "config/requirements.txt"
+      - "Dockerfile"
+      - ".dockerignore"
+  # How you resume automated promotion after a rollback - see the guard below.
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Promote even if production is pinned by a rollback"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -27,6 +45,38 @@ jobs:
           repository: yoavmanoim-prog/devops-task-gitops
           token: ${{ secrets.GITOPS_REPO_TOKEN }}
           path: gitops
+          # Full history, NOT the default shallow depth-1 clone. The guard
+          # below runs `git log -- <file>`, which has to walk back to the last
+          # commit that touched that specific file. At depth 1 the only commit
+          # present is the tip; if it touched some other file, git log returns
+          # nothing and the guard silently passes - the exact failure it exists
+          # to prevent.
+          fetch-depth: 0
+      # Blind writes are what make a rollback fragile: this workflow used to
+      # overwrite production's tag without looking at what was already there,
+      # so any merge to main erased a deliberate pin. Instead, check who wrote
+      # the file last. CI's own commits say "chore: promote ...", rollback.yaml
+      # writes "rollback: ...". If a human pinned production, stop.
+      #
+      # This is a conditional write (compare-and-swap) rather than a lock: the
+      # rollback commit IS the marker, so there is no .pinned file to create,
+      # and no cleanup step for someone to forget. Forcing a promotion writes a
+      # normal "chore: promote" commit, which clears the pin as a side effect.
+      - name: Refuse to overwrite a deliberate pin
+        if: ${{ !inputs.force }}
+        working-directory: gitops
+        run: |
+          LAST=$(git log -1 --format=%s -- apps/prod/values-production.yaml)
+          echo "last writer: ${LAST:-<none>}"
+          case "$LAST" in
+            rollback:*)
+              echo "::error::Production is pinned by a rollback: $LAST"
+              echo "::error::Someone rolled production back on purpose, and promoting now would undo it."
+              echo "::error::If that rollback is resolved and you do want to ship forward, re-run this"
+              echo "::error::workflow manually (Actions -> prod -> Run workflow) with force = true."
+              exit 1
+              ;;
+          esac
       - name: Read staging's current image tag
         id: source
         run: |
