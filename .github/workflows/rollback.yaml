@@ -1,0 +1,90 @@
+# Manual production rollback - pins production to an EXISTING, previously
+# built image tag.
+#
+# Why this exists as its own workflow rather than a branch inside prod.yaml:
+# merging to main can only ever move staging's CURRENT tag forward, so the
+# normal promotion path cannot select an older image. Reverting app source
+# doesn't help either - nothing in these workflows reads app source. The app
+# repo decides what gets BUILT (dev only); the gitops repo decides what gets
+# RUN. The alternative was hand-editing the gitops repo, which breaks the
+# rule that CI is the sole writer to those values files.
+#
+# Nothing is rebuilt. The tag must already exist in ECR - which it will, since
+# ECR uses IMMUTABLE tags (so sha-<x> is byte-identical to what was tested)
+# and the lifecycle policy retains the last 30 tagged images.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing ECR tag to pin production to, e.g. sha-05859b5"
+        required: true
+        type: string
+      reason:
+        description: "Why (recorded in the gitops commit message)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: 302954730632.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: devops-task-app
+  HELM_VERSION: v4.2.3
+
+jobs:
+  rollback-production:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # AWS OIDC, to verify the tag exists in ECR
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 - for the patch script
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yoavmanoim-prog/devops-task-gitops
+          token: ${{ secrets.GITOPS_REPO_TOKEN }}
+          path: gitops
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: ${{ vars.AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      # The same guard the promotion workflows use. A rollback is the WORST
+      # place to skip it: a typo'd or lifecycle-expired tag would leave ArgoCD
+      # trying to pull an image that doesn't exist, during an incident.
+      - uses: ./.github/actions/verify-ecr-tag
+        with:
+          repository: ${{ env.ECR_REPOSITORY }}
+          tag: ${{ inputs.tag }}
+          region: ${{ env.AWS_REGION }}
+      # `bump` (explicit tag), not `promote` (copies another file's tag).
+      - name: Pin production to the requested tag
+        run: |
+          python3 .github/scripts/patch_gitops_values.py bump \
+            --file gitops/apps/prod/values-production.yaml \
+            --repository "$ECR_REGISTRY/$ECR_REPOSITORY" \
+            --tag "${{ inputs.tag }}" \
+            --reset-probes
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+      - name: Render chart with the patched values (fail fast if broken)
+        run: |
+          helm template production gitops/charts/app \
+            -f gitops/apps/prod/values-production.yaml > /dev/null
+      - uses: ./.github/actions/commit-and-push
+        with:
+          file: apps/prod/values-production.yaml
+          message: "rollback: pin production to ${{ inputs.tag }} - ${{ inputs.reason }}"
+      # Deliberately does NOT deploy. Production's Application has no
+      # automated sync policy, so this only lands the tag in git; a human
+      # still clicks Sync in ArgoCD. Rolling back is a deploy like any other
+      # and goes through the same gate.
+      - name: Next step
+        run: |
+          echo "Tag written to gitops. Production will NOT change until someone"
+          echo "syncs app-production in ArgoCD - the manual gate applies to"
+          echo "rollbacks too."
