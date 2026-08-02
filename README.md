@@ -56,9 +56,10 @@ Three per-environment workflow files under `.github/workflows/` (plus `lint.yaml
 - **`staging.yaml`** (push to `staging`) - verify the source tag actually exists in ECR → promote
   it (no rebuild) into `gitops/apps/dev/values-staging.yaml` → `helm template` the result to fail
   fast if it's broken → commit + push.
-- **`prod.yaml`** (push to `main`) - same shape, `apps/dev/values-staging.yaml` →
-  `apps/prod/values-production.yaml`. Production's `Application` has no automated sync policy, so
-  this does not itself deploy anything - a human still clicks Sync in ArgoCD.
+- **`prod.yaml`** (push to `main`, filtered to paths that can change the image) - same shape,
+  `apps/dev/values-staging.yaml` → `apps/prod/values-production.yaml`. Production's `Application`
+  has no automated sync policy, so this does not itself deploy anything - a human still clicks Sync
+  in ArgoCD. **Refuses to overwrite a rollback** - see *Rolling production back* below.
 - **`rollback.yaml`** (manual `workflow_dispatch`) - pins production to an **existing** ECR tag.
   Nothing is rebuilt; it reuses the same `verify-ecr-tag` guard, the same patch script (`bump`,
   with an explicit `--tag`), the same `helm template` check and the same commit-and-push. Needed
@@ -83,6 +84,56 @@ Everything else (ECR login mechanics beyond the login action itself, git commit/
 patching) is either a local composite action under `.github/actions/` or a plain script
 (`.github/scripts/patch_gitops_values.py`) - never an unnecessary marketplace dependency.
 
+## Rolling production back
+
+```sh
+git -C gitops log --oneline -5 -- apps/prod/values-production.yaml   # find a known-good tag
+gh workflow run rollback.yaml -f tag=sha-05859b5 -f reason="checkout 500s"
+```
+
+Then click Sync on `app-production` in ArgoCD - CI only writes the tag to git, it never deploys.
+(`workflow_dispatch` workflows only appear in the Actions UI once they're on the **default branch**,
+so `rollback.yaml` has to reach `main` before the *Run workflow* button exists.)
+
+**Why a rollback can't be quietly undone.** `prod.yaml` used to write blindly: every push to `main`
+copied staging's tag onto production without looking at what was there. So a rollback survived only
+until the next merge - including a merge that had nothing to do with the app. The rollback was
+erased from git, and the next person to hit Sync shipped the bad image again.
+
+The fix is a **conditional write** instead of a blind one. Before promoting, `prod.yaml` asks who
+touched production's values file last:
+
+```sh
+git log -1 --format=%s -- apps/prod/values-production.yaml
+```
+
+CI's own commits read `chore: promote ...`; `rollback.yaml` writes `rollback: ...`. If a human
+pinned production, the promotion stops with an error instead of overwriting them. It's the same idea
+as an HTTP `If-Match` header or a conditional `PutObject` - don't take a lock, just refuse to write
+if the world moved since you last looked.
+
+The point of keying off the commit is that **the rollback is its own marker**. There's no `.pinned`
+file to create, and so no cleanup step for anyone to forget - which is how "we pinned prod during an
+incident in March" turns into "prod stopped receiving deploys for a month". To ship forward again
+you run `prod.yaml` manually with `force = true`; that writes an ordinary `chore: promote ...`
+commit, and the pin clears as a side effect of the thing you already wanted to do.
+
+Two supporting details that are easy to get wrong:
+
+- The gitops checkout sets **`fetch-depth: 0`**. At `actions/checkout`'s default depth of 1 the only
+  commit present has no parent, so git treats every file as created by it and `git log -- <path>`
+  matches the tip whatever it touched. The guard would read the wrong commit message and wave the
+  promotion through **silently** - the exact failure it exists to prevent.
+- `prod.yaml`'s push trigger is **path-filtered** to files that can change the image. That isn't
+  about efficiency here: without it every unrelated merge to `main` would trip the guard and fail
+  the run, so a red X would stop meaning anything. With it, a guard failure always means a real
+  promotion was attempted against a pinned production.
+
+Note this is *not* the same as a "skip if the tag already matches what's deployed" check, which
+looks similar and doesn't work: that fires exactly when you need it to hold still, because the
+rollback is what made the tags differ in the first place. That's an efficiency control; it has no
+concept of intent.
+
 ## Required repo configuration
 
 Two things this repo's CI needs that aren't (and shouldn't be) committed:
@@ -100,20 +151,6 @@ Two things this repo's CI needs that aren't (and shouldn't be) committed:
   the real secret exists.
 - `secret_message` on `/` echoes the mounted secret's actual value - fine for this demo secret
   (we control its content), not a pattern to copy for a real credential.
-- **A production rollback is not sticky.** `prod.yaml` triggers on *any* push to `main` with no
-  `paths:` filter, and unconditionally copies staging's current tag onto production. So after a
-  rollback pins production to `sha-GOOD`, the next merge to `main` - even a README fix by someone
-  who doesn't know a rollback happened - re-reads `values-staging.yaml` (still `sha-BAD`, since
-  staging wasn't rolled back) and writes it straight back. The manual ArgoCD Sync stops it going
-  live silently, but the rollback has been erased from git and the next person to hit Sync ships
-  the bad image.
-
-  Worth being precise about why the obvious guard doesn't help: a "skip if the tag already matches
-  what's deployed" check fires *exactly* when you need it to hold still, because the rollback is
-  what made the tags differ. That's an efficiency control, not a safety one - it has no concept of
-  intent. The real fixes are a GitHub Environment on `prod.yaml` with a required reviewer (the job
-  waits for a human who can decline an unrelated promotion - no new state, and free on public
-  repos), or a `paths:` filter so unrelated merges don't trigger it at all. Neither is applied.
 - **There is no staging rollback**, only production. Staging's `Application` is auto-synced with
   `selfHeal`, so a staging rollback would take effect immediately but hold only until the next
   `dev` → `staging` merge re-promoted dev's tag - which is arguably correct, since staging exists
